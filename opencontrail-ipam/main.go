@@ -7,7 +7,7 @@ package main
 import (
 	"github.com/michaelhenkel/contrail-go-api"
 	contrailtypes "github.com/michaelhenkel/contrail-go-api/types"
-        "github.com/Juniper/contrail-go-api/config"
+        "github.com/michaelhenkel/contrail-go-api/config"
         "github.com/containernetworking/cni/pkg/types"
         "github.com/containernetworking/cni/pkg/skel"
         "github.com/containernetworking/cni/pkg/ipam"
