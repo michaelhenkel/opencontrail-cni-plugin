@@ -1,0 +1,5 @@
+apt-get install -y libboost-dev libboost-test-dev libboost-program-options-dev libboost-system-dev libboost-filesystem-dev libevent-dev automake libtool flex bison pkg-config g++ libssl-dev
+git clone https://github.com/Juniper/contrail-controller
+cd ~/contrail-master/build/controller/src/vnsw/agent/openstack
+thrift -r --gen go instance_service.thrift
+go get git.apache.org/thrift.git/lib/go/thrift

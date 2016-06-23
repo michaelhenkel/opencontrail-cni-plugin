@@ -8,7 +8,7 @@ apt-get update
 apt-get install -y golang jq
 export GOPATH=/usr/lib/go/
 export CNI_PATH=~/cni/bin
-cd CNI_PATH
+cd ~/cni
 go get github.com/michaelhenkel/contrail-go-api
 go get github.com/satori/go.uuid
 ./build
