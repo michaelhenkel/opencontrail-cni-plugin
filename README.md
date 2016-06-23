@@ -11,6 +11,9 @@ export CNI_PATH=~/cni/bin
 cd ~/cni
 go get github.com/michaelhenkel/contrail-go-api
 go get github.com/satori/go.uuid
+go get github.com/pborman/uuid
+go install github.com/michaelhenkel/contrail-go-api/cli
+mv /usr/lib/go/src/github.com/michaelhenkel /usr/lib/go/src/github.com/Juniper
 ./build
 mkdir -p /etc/cni/net.d
 cat >/etc/cni/net.d/10-opencontrail.conf <<EOF
@@ -35,16 +38,17 @@ cat >/etc/cni/net.d/10-opencontrail.conf <<EOF
 }
 EOF
 bin/opencontrail-ipam &
-ip netns add test
-export CNI_COMMAND=ADD
-export CNI_PATH=/root/cni/bin
+export CNI_PATH=~/cni/bin
 export PATH=$CNI_PATH:$PATH
 export CNI_CONTAINERID=test
 export CNI_NETNS=/var/run/netns/test
 export CNI_IFNAME=eth0
-opencontrail < /etc/cni/net.d/10-opencontrail.conf
-ip netns exec test ip addr sh
+#add namespace
+ip netns add test
 export CNI_COMMAND=ADD; opencontrail < /etc/cni/net.d/10-opencontrail.conf
+#check namespace
+ip netns exec test ip addr sh
+#delete namespace
 export CNI_COMMAND=DEL; opencontrail < /etc/cni/net.d/10-opencontrail.conf
 ip netns del test && ip netns add test
 ```
