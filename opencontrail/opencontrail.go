@@ -229,7 +229,7 @@ func cmdAdd(args *skel.CmdArgs) error {
         	return err
     	}
         
-        vrouterAddPort(vmi.GetUuid(), vm.GetUuid(), hostVethName, vethMac.String(), vnObj.GetName(), projectObj.GetUuid(), "NovaVMPort")
+        contrail.VrouterAddPort(vmi.GetUuid(), vm.GetUuid(), hostVethName, vethMac.String(), vnObj.GetName(), projectObj.GetUuid(), "NovaVMPort")
         return nil
 }
 
@@ -252,7 +252,7 @@ func deleteVMI(client *contrail.Client, networkName string, containerName string
         	}
         	client.Delete(vmiObj)
 	}
-	vrouterDelPort(vmiUuid)
+	contrail.VrouterDelPort(vmiUuid)
 	client.Delete(vmObj)
 }
 
