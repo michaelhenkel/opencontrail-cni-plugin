@@ -1,19 +1,17 @@
 ```
+add-apt-repository ppa:ubuntu-lxc/lxd-stable
+apt-get update
+apt-get install -y golang jq
 git clone https://github.com/michaelhenkel/cni
 git clone https://github.com/michaelhenkel/opencontrail-cni-plugin
 cp -r ~/opencontrail-cni-plugin/opencontrail ~/cni/plugins/main
 cp -r ~/opencontrail-cni-plugin/opencontrail-ipam ~/cni/plugins/ipam
-add-apt-repository ppa:ubuntu-lxc/lxd-stable
-apt-get update
-apt-get install -y golang jq
 export GOPATH=/usr/lib/go/
 export CNI_PATH=~/cni/bin
 cd ~/cni
 go get github.com/michaelhenkel/contrail-go-api
 go get github.com/satori/go.uuid
 go get github.com/pborman/uuid
-go install github.com/michaelhenkel/contrail-go-api/cli
-mv /usr/lib/go/src/github.com/michaelhenkel /usr/lib/go/src/github.com/Juniper
 ./build
 mkdir -p /etc/cni/net.d
 cat >/etc/cni/net.d/10-opencontrail.conf <<EOF
@@ -50,5 +48,5 @@ export CNI_COMMAND=ADD; opencontrail < /etc/cni/net.d/10-opencontrail.conf
 ip netns exec test ip addr sh
 #delete namespace
 export CNI_COMMAND=DEL; opencontrail < /etc/cni/net.d/10-opencontrail.conf
-ip netns del test && ip netns add test
+ip netns del test
 ```
