@@ -1,0 +1,2 @@
+export GOPATH=/usr/lib/go/
+export CNI_PATH=~/cni/bin
