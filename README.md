@@ -1,6 +1,4 @@
 ```
-export GOPATH=/usr/lib/go/
-export CNI_PATH=~/cni/bin
 git clone https://github.com/michaelhenkel/cni
 git clone https://github.com/michaelhenkel/opencontrail-cni-plugin
 cp -r ~/opencontrail-cni-plugin/opencontrail ~/cni/plugins/main
@@ -8,8 +6,9 @@ cp -r ~/opencontrail-cni-plugin/opencontrail-ipam ~/cni/plugins/ipam
 add-apt-repository ppa:ubuntu-lxc/lxd-stable
 apt-get update
 apt-get install -y golang jq
-cd ~/cni/
-source ~/cni/gorc
+export GOPATH=/usr/lib/go/
+export CNI_PATH=~/cni/bin
+cd CNI_PATH
 go get github.com/michaelhenkel/contrail-go-api
 go get github.com/satori/go.uuid
 ./build
