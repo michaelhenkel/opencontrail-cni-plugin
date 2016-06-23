@@ -1,3 +1,18 @@
+# OpenContrail CNI Plugin
+This plugin provides overlay networking for CNI based infrastructures.    
+It requires a working OpenContrail control plane and a host (aka Compute Node)    
+with vrouter-agent and vrouter kernel module installed.    
+The plugin has an IPAM and the plugin part. For now both must run on the Compute    
+node.    
+The IPAM plugin runs as a daemon in the background and is responsible for creating    
+new virtual networks in case it doesn't exist and for assigning IP addresses and    
+gateway information.    
+The opencontrail plugin is an executable which creates virtual machine and virtual    
+machine interface objects in the OpenContrail configuration database.    
+It retrieves virtual network and ip instance information from the IPAM plugin.    
+The virtual machine interface is referenced to the virtual machine and the     
+ip instance to the virtual network and virtual machine interface.    
+
 ```
 add-apt-repository ppa:ubuntu-lxc/lxd-stable
 apt-get update
