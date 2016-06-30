@@ -6,6 +6,7 @@ package main
 
 import (
 	"github.com/michaelhenkel/contrail-go-api"
+	contrailconfig "github.com/michaelhenkel/contrail-go-api/config"
         contrailtypes "github.com/michaelhenkel/contrail-go-api/types"
         "github.com/containernetworking/cni/pkg/types"
         "github.com/containernetworking/cni/pkg/skel"
@@ -21,6 +22,7 @@ import (
 	"os"
         "net"
         "strings"
+        "strconv"
 )
 
 type ExecFunc func(client *contrail.Client, flagSet *flag.FlagSet)
@@ -155,6 +157,10 @@ func setupVeth(netns ns.NetNS, ifName string, mtu int) (net.HardwareAddr, string
 }
 
 func cmdAdd(args *skel.CmdArgs) error {
+        var dnsServer string
+        var dnsServerList []string
+        var defaultGateway string
+        var ipPrefixLen int
         n, err := loadNetConf(args.StdinData)
         netns, err := ns.GetNS(args.Netns)
 	if err != nil {
@@ -174,20 +180,7 @@ func cmdAdd(args *skel.CmdArgs) error {
         if err != nil {
                 return err
         }
-        result, err := ipam.ExecAdd(n.IPAM.Type, args.StdinData)
-        if err != nil {
-                return err
-        }
-        for _, customAttribute := range result.CUSTOMATTR.CustomAttributes {
-                if customAttribute.Name == "instanceIpName" {
-			instanceIpName = customAttribute.Value
-		}
-                if customAttribute.Name == "vnUuid" {
-			vnUuid = customAttribute.Value
-		}
-
-        }
-		
+        ipamConf, err := LoadIPAMConfig(args.StdinData, args.Args)
         client := contrail.NewClient(oc_server, oc_port)
         if len(os_auth_url) > 0 {
                 setupAuthKeystone(client)
@@ -198,13 +191,41 @@ func cmdAdd(args *skel.CmdArgs) error {
 		os.Exit(1)
 	}
 	projectObj := projectIObj.(*contrailtypes.Project)
+        vnUuid = networkCreate(client, ipamConf)
         vm := new(contrailtypes.VirtualMachine)
 	vm.SetName(containerName)
         client.Create(vm)
-        instanceIpIObj, err := client.FindByName("instance-ip",instanceIpName)
-        instanceIpObj := instanceIpIObj.(*contrailtypes.InstanceIp)
         vnIObj, err := client.FindByUuid("virtual-network", vnUuid)
         vnObj := vnIObj.(*contrailtypes.VirtualNetwork)
+	ipamRefs, err := vnObj.GetNetworkIpamRefs()
+        for _, ref := range ipamRefs {
+                attr := ref.Attr.(contrailtypes.VnSubnetsType)
+                for _, ipamSubnet := range attr.IpamSubnets {
+                        defaultGateway = ipamSubnet.DefaultGateway
+                        dnsServer = ipamSubnet.DnsServerAddress
+                        ipPrefixLen = ipamSubnet.Subnet.IpPrefixLen
+                }
+        }
+        if err != nil {
+                return err
+        }
+        instanceIpName = createInstanceIp(client, vnObj)
+        instanceIpIObj, err := client.FindByName("instance-ip",instanceIpName)
+        instanceIpObj := instanceIpIObj.(*contrailtypes.InstanceIp)
+        instanceipAddress :=instanceIpObj.GetInstanceIpAddress()
+        netmask := net.CIDRMask(ipPrefixLen, 32)
+        if err != nil {
+                return err
+        }
+        ipConf := &types.IPConfig{
+                IP:      net.IPNet{IP: net.ParseIP(instanceipAddress), Mask: netmask},
+                Gateway: net.ParseIP(defaultGateway),
+        }
+        dnsServerList = append(dnsServerList,dnsServer)
+
+        dnsConf := types.DNS{
+                Nameservers:    dnsServerList,
+        }
 	vmiUuidv4 := uuid.NewV4().String()
         vmiUuid := strings.Split(vmiUuidv4,"-")[0]
         vmiMac := new(contrailtypes.MacAddressesType)
@@ -219,6 +240,10 @@ func cmdAdd(args *skel.CmdArgs) error {
         client.Update(instanceIpObj)
         client.Update(vm)
 	_, defaultNet, err := net.ParseCIDR("0.0.0.0/0")
+        result := &types.Result{
+                IP4: ipConf,
+                DNS: dnsConf,
+        }
 	result.IP4.Routes = append(
                 result.IP4.Routes,
                 types.Route{Dst: *defaultNet, GW: result.IP4.Gateway},
@@ -231,6 +256,70 @@ func cmdAdd(args *skel.CmdArgs) error {
         
         contrail.VrouterAddPort(vmi.GetUuid(), vm.GetUuid(), hostVethName, vethMac.String(), vnObj.GetName(), projectObj.GetUuid(), "NovaVMPort")
         return nil
+}
+
+func createInstanceIp(client *contrail.Client, vnObj contrail.IObject) (
+        string){
+        instanceIpUuid := uuid.NewV4().String()
+        instanceIp := new(contrailtypes.InstanceIp)
+        instanceIp.SetName(instanceIpUuid)
+        instanceIp.AddVirtualNetwork(vnObj.(*contrailtypes.VirtualNetwork))
+        client.Create(instanceIp)
+        instanceIpIObj, err := client.FindByName("instance-ip",instanceIpUuid)
+        if err != nil || instanceIpIObj == nil{
+                fmt.Fprintln(os.Stderr, err)
+                os.Exit(1)
+        }
+        instanceIpObj := instanceIpIObj.(*contrailtypes.InstanceIp)
+        instanceIpObj.ClearVirtualNetwork()
+        return instanceIpUuid
+}
+
+func networkCreate(client *contrail.Client, ipam *IPAMConfig)(
+        string) {
+        var parent_id string
+        var err error
+        var vnUuid string
+        parent_id, err = contrailconfig.GetProjectId(
+                         client, os_tenant_name, "")
+        if err != nil {
+                fmt.Fprintln(os.Stderr, err)
+                os.Exit(1)
+        }
+        networkList, err := contrailconfig.NetworkList(client, parent_id, false)
+        if err != nil {
+                fmt.Fprint(os.Stderr, err)
+                os.Exit(1)
+        }
+        for _, n := range networkList {
+            if n.Name == ipam.Name {
+                vnUuid := n.Uuid
+                return vnUuid
+            }
+        }
+        fmt.Fprintln(os.Stderr, "network doesn't exist")
+        subnet := net.IP(ipam.Subnet.IP).String()
+        netmask := net.IP(ipam.Subnet.Mask).String()
+        subnetSize, bits := net.IPMask(ipam.Subnet.Mask).Size()
+        fmt.Fprintln(os.Stderr, subnetSize, bits)
+        fmt.Fprintln(os.Stderr, network_name)
+        fmt.Fprintln(os.Stderr, subnet)
+        fmt.Fprintln(os.Stderr, netmask)
+        parent_id, err = contrailconfig.GetProjectId(
+            client, os_tenant_name, "")
+        fmt.Fprint(os.Stderr, parent_id)
+        if err != nil {
+            fmt.Fprint(os.Stderr, err)
+            os.Exit(1)
+        }
+        vnUuid, err = contrailconfig.CreateNetworkWithSubnet(client, parent_id,
+                network_name, subnet + "/" + strconv.Itoa(subnetSize))
+        if err != nil {
+            fmt.Fprint(os.Stderr, err)
+            os.Exit(1)
+        }
+        return vnUuid
+
 }
 
 func deleteVMI(client *contrail.Client, networkName string, containerName string) {
