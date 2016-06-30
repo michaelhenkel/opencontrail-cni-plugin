@@ -50,7 +50,6 @@ cat >/etc/cni/net.d/10-opencontrail.conf <<EOF
     }
 }
 EOF
-bin/opencontrail-ipam &
 export CNI_PATH=~/cni/bin
 export PATH=$CNI_PATH:$PATH
 export CNI_CONTAINERID=test
