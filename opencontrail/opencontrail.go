@@ -63,6 +63,7 @@ type NetConf struct {
 	MTU           int    `json:"mtu"`
 }
 
+
 func loadNetConf(bytes []byte) (*NetConf, error) {
         n := &NetConf{}
         if err := json.Unmarshal(bytes, n); err != nil {
@@ -157,10 +158,6 @@ func setupVeth(netns ns.NetNS, ifName string, mtu int) (net.HardwareAddr, string
 }
 
 func cmdAdd(args *skel.CmdArgs) error {
-        var dnsServer string
-        var dnsServerList []string
-        var defaultGateway string
-        var ipPrefixLen int
         n, err := loadNetConf(args.StdinData)
         netns, err := ns.GetNS(args.Netns)
 	if err != nil {
@@ -173,13 +170,8 @@ func cmdAdd(args *skel.CmdArgs) error {
     	}
         defer netns.Close()
         vethMac, hostVethName, err := setupVeth(netns, args.IfName, n.MTU)
-        var instanceIpName string
-        var vnUuid string
         InitFlags(n)
         flag.Parse()
-        if err != nil {
-                return err
-        }
         ipamConf, err := LoadIPAMConfig(args.StdinData, args.Args)
         client := contrail.NewClient(oc_server, oc_port)
         if len(os_auth_url) > 0 {
@@ -191,13 +183,31 @@ func cmdAdd(args *skel.CmdArgs) error {
 		os.Exit(1)
 	}
 	projectObj := projectIObj.(*contrailtypes.Project)
-        vnUuid = networkCreate(client, ipamConf)
-        vm := new(contrailtypes.VirtualMachine)
-	vm.SetName(containerName)
-        client.Create(vm)
-        vnIObj, err := client.FindByUuid("virtual-network", vnUuid)
-        vnObj := vnIObj.(*contrailtypes.VirtualNetwork)
-	ipamRefs, err := vnObj.GetNetworkIpamRefs()
+        virtualNetworkObj := createNetwork(client, ipamConf)
+        virtualMachineObj := createVirtualMachine(client, containerName)
+        instanceIpObj := createInstanceIp(client, virtualNetworkObj)
+        ipamConfiguration := createIpamConfiguration(virtualNetworkObj, instanceIpObj)
+        virtualMachineInterfaceObj := createVirtualMachineInterface(client, virtualNetworkObj, virtualMachineObj, vethMac.String(), os_tenant_name)
+        instanceIpObj.AddVirtualMachineInterface(virtualMachineInterfaceObj)
+        client.Update(instanceIpObj)
+        client.Update(virtualMachineObj)
+        if err := netns.Do(func(_ ns.NetNS) error {
+        	return ipam.ConfigureIface(args.IfName, ipamConfiguration)
+        }); err != nil {
+        	return err
+    	}
+        
+        contrail.VrouterAddPort(virtualMachineInterfaceObj.GetUuid(), virtualMachineObj.GetUuid(), hostVethName, vethMac.String(), virtualNetworkObj.GetName(), projectObj.GetUuid(), "NovaVMPort")
+        return nil
+}
+
+func createIpamConfiguration(vnObj *contrailtypes.VirtualNetwork, instIpObj *contrailtypes.InstanceIp) (
+        *types.Result){
+        var defaultGateway string
+        var dnsServer string
+        var ipPrefixLen int
+        var dnsServerList []string
+        ipamRefs, _ := vnObj.GetNetworkIpamRefs()
         for _, ref := range ipamRefs {
                 attr := ref.Attr.(contrailtypes.VnSubnetsType)
                 for _, ipamSubnet := range attr.IpamSubnets {
@@ -206,64 +216,66 @@ func cmdAdd(args *skel.CmdArgs) error {
                         ipPrefixLen = ipamSubnet.Subnet.IpPrefixLen
                 }
         }
-        if err != nil {
-                return err
-        }
-        instanceIpName = createInstanceIp(client, vnObj)
-        instanceIpIObj, err := client.FindByName("instance-ip",instanceIpName)
-        instanceIpObj := instanceIpIObj.(*contrailtypes.InstanceIp)
-        instanceipAddress :=instanceIpObj.GetInstanceIpAddress()
         netmask := net.CIDRMask(ipPrefixLen, 32)
-        if err != nil {
-                return err
-        }
         ipConf := &types.IPConfig{
-                IP:      net.IPNet{IP: net.ParseIP(instanceipAddress), Mask: netmask},
+                IP:      net.IPNet{IP: net.ParseIP(instIpObj.GetInstanceIpAddress()), Mask: netmask},
                 Gateway: net.ParseIP(defaultGateway),
         }
         dnsServerList = append(dnsServerList,dnsServer)
-
         dnsConf := types.DNS{
                 Nameservers:    dnsServerList,
         }
-	vmiUuidv4 := uuid.NewV4().String()
-        vmiUuid := strings.Split(vmiUuidv4,"-")[0]
-        vmiMac := new(contrailtypes.MacAddressesType)
-        vmiMac.AddMacAddress(vethMac.String())
-        vmi := new(contrailtypes.VirtualMachineInterface) 
-        vmi.SetFQName("project", []string{"default-domain", os_tenant_name, vmiUuid})
-        vmi.SetVirtualMachineInterfaceMacAddresses(vmiMac)
-        vmi.AddVirtualNetwork(vnObj)
-        vmi.AddVirtualMachine(vm)
-        client.Create(vmi)
-        instanceIpObj.AddVirtualMachineInterface(vmi)
-        client.Update(instanceIpObj)
-        client.Update(vm)
-	_, defaultNet, err := net.ParseCIDR("0.0.0.0/0")
+        _, defaultNet, _ := net.ParseCIDR("0.0.0.0/0")
         result := &types.Result{
                 IP4: ipConf,
                 DNS: dnsConf,
         }
-	result.IP4.Routes = append(
+        result.IP4.Routes = append(
                 result.IP4.Routes,
                 types.Route{Dst: *defaultNet, GW: result.IP4.Gateway},
         )
-        if err := netns.Do(func(_ ns.NetNS) error {
-        	return ipam.ConfigureIface(args.IfName, result)
-        }); err != nil {
-        	return err
-    	}
-        
-        contrail.VrouterAddPort(vmi.GetUuid(), vm.GetUuid(), hostVethName, vethMac.String(), vnObj.GetName(), projectObj.GetUuid(), "NovaVMPort")
-        return nil
+        return result
+}
+      
+
+func createVirtualMachine(client *contrail.Client, containerName string) (
+        *contrailtypes.VirtualMachine){
+        vm := new(contrailtypes.VirtualMachine)
+        vm.SetName(containerName)
+        client.Create(vm)
+        vmIObj, _ := client.FindByName("virtual-machine",containerName)
+        vmObj := vmIObj.(*contrailtypes.VirtualMachine)
+        return vmObj
+
 }
 
-func createInstanceIp(client *contrail.Client, vnObj contrail.IObject) (
-        string){
+func createVirtualMachineInterface(client *contrail.Client, vnObj *contrailtypes.VirtualNetwork, vmObj *contrailtypes.VirtualMachine, mac string, os_tenant_name string) (
+        *contrailtypes.VirtualMachineInterface){
+        vmiUuidv4 := uuid.NewV4().String()
+        vmiUuid := strings.Split(vmiUuidv4,"-")[0]
+        vmiMac := new(contrailtypes.MacAddressesType)
+        vmiMac.AddMacAddress(mac)
+        vmi := new(contrailtypes.VirtualMachineInterface)
+        vmi.SetFQName("project", []string{"default-domain", os_tenant_name, vmiUuid})
+        vmi.SetVirtualMachineInterfaceMacAddresses(vmiMac)
+        vmi.AddVirtualNetwork(vnObj)
+        vmi.AddVirtualMachine(vmObj)
+        client.Create(vmi)
+        vmiIObj, err := client.FindByName("virtual-machine-interface","default-domain:" + os_tenant_name + ":" + vmiUuid)
+        if err != nil || vmiIObj == nil{
+                fmt.Fprintln(os.Stderr, err, vmiUuid)
+                os.Exit(1)
+        }
+        vmiObj := vmiIObj.(*contrailtypes.VirtualMachineInterface)
+        return vmiObj
+}
+
+func createInstanceIp(client *contrail.Client, vnObj *contrailtypes.VirtualNetwork) (
+        *contrailtypes.InstanceIp){
         instanceIpUuid := uuid.NewV4().String()
         instanceIp := new(contrailtypes.InstanceIp)
         instanceIp.SetName(instanceIpUuid)
-        instanceIp.AddVirtualNetwork(vnObj.(*contrailtypes.VirtualNetwork))
+        instanceIp.AddVirtualNetwork(vnObj)
         client.Create(instanceIp)
         instanceIpIObj, err := client.FindByName("instance-ip",instanceIpUuid)
         if err != nil || instanceIpIObj == nil{
@@ -272,11 +284,11 @@ func createInstanceIp(client *contrail.Client, vnObj contrail.IObject) (
         }
         instanceIpObj := instanceIpIObj.(*contrailtypes.InstanceIp)
         instanceIpObj.ClearVirtualNetwork()
-        return instanceIpUuid
+        return instanceIpObj
 }
 
-func networkCreate(client *contrail.Client, ipam *IPAMConfig)(
-        string) {
+func createNetwork(client *contrail.Client, ipam *IPAMConfig)(
+        *contrailtypes.VirtualNetwork) {
         var parent_id string
         var err error
         var vnUuid string
@@ -294,7 +306,9 @@ func networkCreate(client *contrail.Client, ipam *IPAMConfig)(
         for _, n := range networkList {
             if n.Name == ipam.Name {
                 vnUuid := n.Uuid
-                return vnUuid
+                vnIObj, _ := client.FindByUuid("virtual-network", vnUuid)
+                vnObj := vnIObj.(*contrailtypes.VirtualNetwork)
+                return vnObj
             }
         }
         fmt.Fprintln(os.Stderr, "network doesn't exist")
@@ -314,11 +328,13 @@ func networkCreate(client *contrail.Client, ipam *IPAMConfig)(
         }
         vnUuid, err = contrailconfig.CreateNetworkWithSubnet(client, parent_id,
                 network_name, subnet + "/" + strconv.Itoa(subnetSize))
+        vnIObj, err := client.FindByUuid("virtual-network", vnUuid)
+        vnObj := vnIObj.(*contrailtypes.VirtualNetwork)
         if err != nil {
             fmt.Fprint(os.Stderr, err)
             os.Exit(1)
         }
-        return vnUuid
+        return vnObj
 
 }
 
