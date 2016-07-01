@@ -29,25 +29,32 @@ go get github.com/satori/go.uuid
 go get github.com/pborman/uuid
 ./build
 mkdir -p /etc/cni/net.d
-cat >/etc/cni/net.d/10-opencontrail.conf <<EOF
+cat >/etc/cni/net.d/10-opencontrail-multi.conf <<EOF
 {
-    "name": "vnx",
-    "type": "opencontrail",
-    "api_server": "10.87.64.34",
-    "api_port": 8082,
-    "auth_url": "http://10.87.64.34:35357/v2.0/",
-    "tenant_name": "admin",
-    "admin_user": "admin",
-    "admin_password": "contrail123",
-    "admin_token": "",
-    "mtu": 1492,
-    "ipam": {
-        "type": "opencontrail-ipam",
-        "subnet": "10.22.0.0/24",
-        "routes": [
-            { "dst": "0.0.0.0/0" }
-        ]
-    }
+    "networks": [
+        {
+            "name": "vnx",
+            "type": "opencontrail",
+            "mtu": 1492,
+            "ipam": {
+                "subnet": "10.22.0.0/24",
+                "routes": [
+                    { "dst": "0.0.0.0/0" }
+                ]
+            }
+        },
+        {
+            "name": "vnx2",
+            "type": "opencontrail",
+            "mtu": 1492,
+            "ipam": {
+                "subnet": "10.23.0.0/24",
+                "routes": [
+                    { "dst": "0.0.0.0/0" }
+                ]
+            }
+        }
+    ]
 }
 EOF
 export CNI_PATH=~/cni/bin
@@ -55,12 +62,13 @@ export PATH=$CNI_PATH:$PATH
 export CNI_CONTAINERID=test
 export CNI_NETNS=/var/run/netns/test
 export CNI_IFNAME=eth0
+export LOG_LEVEL=debug
 #add namespace
 ip netns add test
-export CNI_COMMAND=ADD; opencontrail < /etc/cni/net.d/10-opencontrail.conf
+export CNI_COMMAND=ADD; opencontrail < /etc/cni/net.d/10-opencontrail-multi.conf
 #check namespace
 ip netns exec test ip addr sh
 #delete namespace
-export CNI_COMMAND=DEL; opencontrail < /etc/cni/net.d/10-opencontrail.conf
+export CNI_COMMAND=DEL; opencontrail < /etc/cni/net.d/10-opencontrail-multi.conf
 ip netns del test
 ```
