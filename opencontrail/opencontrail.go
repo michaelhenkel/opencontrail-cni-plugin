@@ -438,22 +438,21 @@ func createNetwork(client *contrail.Client, ipam *IPAMConfig)(
 }
 
 func deleteVirtualMachineInterface(client *contrail.Client, networkName string, containerName string) {
+	logger.Debug("Starting to delete Virtual Machine Interface...")
         fqn := containerName
         vmIObj, _ := client.FindByName("virtual-machine",fqn)
         if vmIObj != nil{
 		vmObj := vmIObj.(*contrailtypes.VirtualMachine)
-		var vmiUuid string
         	vmiRefs, _ := vmObj.GetVirtualMachineInterfaceBackRefs()
         	if len(vmiRefs) > 0 {
 			for _, vmiRef := range vmiRefs {
       	 		 	vmiIObj, _ := client.FindByUuid("virtual-machine-interface",vmiRef.Uuid)
 				vmiObj := vmiIObj.(*contrailtypes.VirtualMachineInterface)
-				vmiUuid = vmiObj.GetUuid()
 				virtualNetworkRefs, _ := vmiObj.GetVirtualNetworkRefs()
 				for _, virtualNetworkRef := range virtualNetworkRefs{
 					vnIObj, _ := client.FindByUuid("virtual-network", virtualNetworkRef.Uuid)
       	 		                vnObj := vnIObj.(*contrailtypes.VirtualNetwork)
-      	 		                if vnObj.GetName() == networkName {
+      	 		                if vnObj.GetDisplayName() == networkName {
       	 		         		instanceIpRefs, _ := vmiObj.GetInstanceIpBackRefs()
       	 		 	        	for _, instanceIpRef := range instanceIpRefs {
       	 		       	 	        	instanceIpIObj, _ := client.FindByUuid("instance-ip", instanceIpRef.Uuid)
@@ -461,7 +460,10 @@ func deleteVirtualMachineInterface(client *contrail.Client, networkName string, 
       	 	        		        	client.Delete(instanceIpObj)
       	 		         		}
        			         		client.Delete(vmiObj)
-						contrail.VrouterDelPort(vmiUuid)
+						contrail.VrouterDelPort(vmiObj.GetUuid())
+						logger.Debug("\n##### Deleted Virtual Machine Interface ####\n")
+						logger.Debug(vmiObj)
+						logger.Debug("\n############################################\n")
 					}
 				}
 			}
@@ -475,6 +477,7 @@ func deleteVirtualMachineInterface(client *contrail.Client, networkName string, 
 	}
 }
 func deleteVirtualNetwork(client *contrail.Client, networkName string) {
+	logger.Debug("Starting to delete Virtual Network....")
 	parent_id, err := contrailconfig.GetProjectId(
                          client, os_tenant_name, "")
         if err != nil {
@@ -490,6 +493,9 @@ func deleteVirtualNetwork(client *contrail.Client, networkName string) {
 			virtualMachineInterfaceRefs, _ := vnObj.GetVirtualMachineInterfaceBackRefs()
 			if len(virtualMachineInterfaceRefs) == 0{
 				client.Delete(vnObj)
+				logger.Debug("Virtual Network deleted...", vnIObj)
+			}else{
+				logger.Debug("Virtual Network not empty...", vnIObj)
 			}
                 }
         }
@@ -498,8 +504,6 @@ func deleteVirtualNetwork(client *contrail.Client, networkName string) {
 func cmdDel(args *skel.CmdArgs) error {
 	var ipn *net.IPNet
         var err error
-//        InitFlags()
-//        flag.Parse()
         containerName := args.ContainerID
         if len(containerName) > 8 {
                         var containerNameArray []string
