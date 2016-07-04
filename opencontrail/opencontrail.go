@@ -26,6 +26,7 @@ import (
         "net"
         "strings"
         "strconv"
+	//"reflect"
 )
 
 type ExecFunc func(client *contrail.Client, flagSet *flag.FlagSet)
@@ -48,8 +49,8 @@ var (
         logger log.Logger
         debug string
 	logToStderr        *bool
-
 	commandMap map[string]CliCommand = make(map[string]CliCommand, 0)
+	//portMap map[string]PortStruct = make(map[string]PortStruct)
 )
 
 func RegisterCliCommand(name string, flagSet *flag.FlagSet, exec ExecFunc) {
@@ -267,6 +268,7 @@ func cmdAdd(args *skel.CmdArgs) error {
         }
         projectObj := projectIObj.(*contrailtypes.Project)
         for _, netConf := range netConfList.Networks {
+		var portMap map[string]contrail.PortStruct = make(map[string]contrail.PortStruct)
                 vethInt = "eth" + strconv.Itoa(vethIntNumber)
                 vethIntNumber = vethIntNumber + 1
         	if err != nil {
@@ -279,7 +281,7 @@ func cmdAdd(args *skel.CmdArgs) error {
         	virtualMachineObj = createVirtualMachine(client, containerName)
         	instanceIpObj = createInstanceIp(client, virtualNetworkObj)
         	ipamConfiguration = createIpamConfiguration(virtualNetworkObj, instanceIpObj)
-        	virtualMachineInterfaceObj = createVirtualMachineInterface(client, virtualNetworkObj, virtualMachineObj, vethMac.String(), os_tenant_name)
+        	virtualMachineInterfaceObj = createVirtualMachineInterface(client, virtualNetworkObj, virtualMachineObj, vethMac.String(), os_tenant_name, hostVethName)
         	instanceIpObj.AddVirtualMachineInterface(virtualMachineInterfaceObj)
         	client.Update(instanceIpObj)
         	client.Update(virtualMachineObj)
@@ -289,7 +291,24 @@ func cmdAdd(args *skel.CmdArgs) error {
         		return err
     		}
 		logger.Debug("\n####### VETHNAME ###########", hostVethName, "\n")
-        	contrail.VrouterAddPort(virtualMachineInterfaceObj.GetUuid(), virtualMachineObj.GetUuid(), hostVethName, vethMac.String(), virtualNetworkObj.GetName(), projectObj.GetUuid(), "NovaVMPort")
+                vrRefs, _ := virtualMachineObj.GetVirtualRouterBackRefs()
+                if len(vrRefs) > 0 {
+                        for _, vrRef := range vrRefs{
+                                vrIObj, _ := client.FindByUuid("virtual-router",vrRef.Uuid)
+                                vrObj := vrIObj.(*contrailtypes.VirtualRouter)
+                                portMap = createPortList(client, vrObj, portMap)
+                        }
+                }
+        	contrail.VrouterAddPort(virtualMachineInterfaceObj.GetUuid(), 
+					virtualMachineObj.GetUuid(), 
+					hostVethName, 
+					vethMac.String(), 
+					virtualNetworkObj.GetName(), 
+					virtualNetworkObj.GetUuid(), 
+					instanceIpObj.GetInstanceIpAddress(),
+					projectObj.GetUuid(), 
+					"NovaVMPort",
+					portMap)
         }
         return nil
 }
@@ -334,6 +353,9 @@ func createIpamConfiguration(vnObj *contrailtypes.VirtualNetwork, instIpObj *con
 func createVirtualMachine(client *contrail.Client, containerName string) (
         *contrailtypes.VirtualMachine){
  	logger.Debug("starting to create Virtual Machine Object...")
+	hostname, _ := os.Hostname()
+        vrIObj, _ := client.FindByName("virtual-router", "default-global-system-config:" + hostname)
+	vrObj:= vrIObj.(*contrailtypes.VirtualRouter)
         vmIObj, _ := client.FindByName("virtual-machine",containerName)
         if vmIObj == nil{
         	vm := new(contrailtypes.VirtualMachine)
@@ -341,6 +363,8 @@ func createVirtualMachine(client *contrail.Client, containerName string) (
         	client.Create(vm)
         	vmIObj, _ := client.FindByName("virtual-machine",containerName)
         	vmObj := vmIObj.(*contrailtypes.VirtualMachine)
+		vrObj.AddVirtualMachine(vmObj)
+		client.Update(vrObj)
 		logger.Debug("Virtual Machine Object created...", vmIObj)
         	return vmObj
 	}else{
@@ -351,22 +375,22 @@ func createVirtualMachine(client *contrail.Client, containerName string) (
 
 }
 
-func createVirtualMachineInterface(client *contrail.Client, vnObj *contrailtypes.VirtualNetwork, vmObj *contrailtypes.VirtualMachine, mac string, os_tenant_name string) (
+func createVirtualMachineInterface(client *contrail.Client, vnObj *contrailtypes.VirtualNetwork, vmObj *contrailtypes.VirtualMachine, mac string, os_tenant_name string, hostVethName string) (
         *contrailtypes.VirtualMachineInterface){
  	logger.Debug("starting to create Virtual Machine Interface Object...")
-        vmiUuidv4 := uuid.NewV4().String()
-        vmiUuid := strings.Split(vmiUuidv4,"-")[0]
+        //vmiUuidv4 := uuid.NewV4().String()
+        //vmiUuid := strings.Split(vmiUuidv4,"-")[0]
         vmiMac := new(contrailtypes.MacAddressesType)
         vmiMac.AddMacAddress(mac)
         vmi := new(contrailtypes.VirtualMachineInterface)
-        vmi.SetFQName("project", []string{"default-domain", os_tenant_name, vmiUuid})
+        vmi.SetFQName("project", []string{"default-domain", os_tenant_name, hostVethName})
         vmi.SetVirtualMachineInterfaceMacAddresses(vmiMac)
         vmi.AddVirtualNetwork(vnObj)
         vmi.AddVirtualMachine(vmObj)
         client.Create(vmi)
-        vmiIObj, err := client.FindByName("virtual-machine-interface","default-domain:" + os_tenant_name + ":" + vmiUuid)
+        vmiIObj, err := client.FindByName("virtual-machine-interface","default-domain:" + os_tenant_name + ":" + hostVethName)
         if err != nil || vmiIObj == nil{
-                fmt.Fprintln(os.Stderr, err, vmiUuid)
+                fmt.Fprintln(os.Stderr, err, hostVethName)
                 os.Exit(1)
         }
         vmiObj := vmiIObj.(*contrailtypes.VirtualMachineInterface)
@@ -407,7 +431,8 @@ func createNetwork(client *contrail.Client, ipam *IPAMConfig)(
         }
         networkList, err := client.ListByParent("virtual-network", parent_id)
         for _, n := range networkList {
-                vnIObj, _ := client.FindByUuid("virtual-network", n.Uuid)
+                vnIObj, err := client.FindByUuid("virtual-network", n.Uuid)
+		fmt.Print("\nvnIObj :", vnIObj, "\nerror: ", err)
                 vnObj := vnIObj.(*contrailtypes.VirtualNetwork)
                 displayName := vnObj.GetDisplayName()
                 if displayName == ipam.Name{
@@ -436,13 +461,91 @@ func createNetwork(client *contrail.Client, ipam *IPAMConfig)(
         return vnObj
 
 }
+/*
+type PortStruct struct{
+	vmUuid string
+	hostVethName string
+	mac string
+	vnName string
+	vnUuid string
+	ipAddress string
+	projectUuid string
+	portType int
+}
+*/
+
+
+func createPortList(client *contrail.Client, vrObj *contrailtypes.VirtualRouter, portMap map[string]contrail.PortStruct) (map[string]contrail.PortStruct){
+	var vnObj *contrailtypes.VirtualNetwork
+	var instanceIpObj *contrailtypes.InstanceIp
+	projectUuid, _ := contrailconfig.GetProjectId(
+                         client, os_tenant_name, "")
+	vmRefs, _ := vrObj.GetVirtualMachineRefs()
+	logger.Debug("\n###################VR vmRefs: ", vmRefs, "#####################/n")
+	if len(vmRefs) > 0 {
+		for _, vmRef := range vmRefs {
+			vmIObj, _ := client.FindByUuid("virtual-machine",vmRef.Uuid)
+                        vmObj := vmIObj.(*contrailtypes.VirtualMachine)				
+			vmiRefs, _ := vmObj.GetVirtualMachineInterfaceBackRefs()
+                	if len(vmiRefs) > 0 {
+			logger.Debug("\n###################VR vmiRefs: ", vmiRefs, "#####################/n")
+                        	for _, vmiRef := range vmiRefs {
+                                	vmiIObj, _ := client.FindByUuid("virtual-machine-interface",vmiRef.Uuid)
+                                	vmiObj := vmiIObj.(*contrailtypes.VirtualMachineInterface)
+                                	virtualNetworkRefs, _ := vmiObj.GetVirtualNetworkRefs()
+					if len(virtualNetworkRefs) > 0{
+						logger.Debug("\n###################VR vnRefs: ", virtualNetworkRefs, "#####################/n")
+                                		for _, virtualNetworkRef := range virtualNetworkRefs{
+                                        		vnIObj, _ := client.FindByUuid("virtual-network", virtualNetworkRef.Uuid)
+                                        		vnObj = vnIObj.(*contrailtypes.VirtualNetwork)
+						}
+					}
+					instanceIpRefs, _ := vmiObj.GetInstanceIpBackRefs()
+					if len(instanceIpRefs) > 0{
+						logger.Debug("\n###################VR instIpRefs: ", instanceIpRefs, "#####################/n")
+                                        	for _, instanceIpRef := range instanceIpRefs {
+                                               		instanceIpIObj, _ := client.FindByUuid("instance-ip", instanceIpRef.Uuid)
+                                               		instanceIpObj = instanceIpIObj.(*contrailtypes.InstanceIp)
+                                        	}
+					}else{
+						logger.Debug("\n###################NO INST IP#####################/n")
+					}
+					portS := contrail.PortStruct{
+						vmObj.GetUuid(),
+						vmiObj.GetUuid(),
+						vmiObj.GetDisplayName(),
+						//hostVethName,
+						vmiObj.GetVirtualMachineInterfaceMacAddresses().MacAddress[0],
+						vnObj.GetName(),
+						vnObj.GetUuid(),
+						instanceIpObj.GetInstanceIpAddress(),
+						projectUuid,
+						0,
+					}
+					portMap[vmiObj.GetUuid()] = portS
+				}
+			}
+		}
+	}
+	logger.Debug("\n###################Port MAP: ", portMap, "#####################\n")
+	return portMap
+}
 
 func deleteVirtualMachineInterface(client *contrail.Client, networkName string, containerName string) {
 	logger.Debug("Starting to delete Virtual Machine Interface...")
+	var portMap map[string]contrail.PortStruct = make(map[string]contrail.PortStruct)
         fqn := containerName
         vmIObj, _ := client.FindByName("virtual-machine",fqn)
         if vmIObj != nil{
 		vmObj := vmIObj.(*contrailtypes.VirtualMachine)
+		vrRefs, _ := vmObj.GetVirtualRouterBackRefs()
+		if len(vrRefs) > 0 {
+			for _, vrRef := range vrRefs{
+				vrIObj, _ := client.FindByUuid("virtual-router",vrRef.Uuid)
+				vrObj := vrIObj.(*contrailtypes.VirtualRouter)
+				portMap = createPortList(client, vrObj, portMap)
+			}
+		}
         	vmiRefs, _ := vmObj.GetVirtualMachineInterfaceBackRefs()
         	if len(vmiRefs) > 0 {
 			for _, vmiRef := range vmiRefs {
@@ -460,7 +563,7 @@ func deleteVirtualMachineInterface(client *contrail.Client, networkName string, 
       	 	        		        	client.Delete(instanceIpObj)
       	 		         		}
        			         		client.Delete(vmiObj)
-						contrail.VrouterDelPort(vmiObj.GetUuid())
+						contrail.VrouterDelPort(vmiObj.GetUuid(), portMap)
 						logger.Debug("\n##### Deleted Virtual Machine Interface ####\n")
 						logger.Debug(vmiObj)
 						logger.Debug("\n############################################\n")
@@ -505,6 +608,7 @@ func cmdDel(args *skel.CmdArgs) error {
 	var ipn *net.IPNet
         var err error
         containerName := args.ContainerID
+	//portMap := make(map[string]PortStruct)
         if len(containerName) > 8 {
                         var containerNameArray []string
                         var newContainerName string
@@ -531,7 +635,7 @@ func cmdDel(args *skel.CmdArgs) error {
     		if err != nil {
         		return err
     		}
-        	deleteVirtualNetwork(client, netConf.NetworkName)
+        	//deleteVirtualNetwork(client, netConf.NetworkName)
 	} 
         return nil
 }
