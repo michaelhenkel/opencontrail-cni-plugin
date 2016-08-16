@@ -20,13 +20,14 @@ apt-get install -y golang jq
 git clone https://github.com/michaelhenkel/cni
 git clone https://github.com/michaelhenkel/opencontrail-cni-plugin
 cp -r ~/opencontrail-cni-plugin/opencontrail ~/cni/plugins/main
-cp -r ~/opencontrail-cni-plugin/opencontrail-ipam ~/cni/plugins/ipam
+#cp -r ~/opencontrail-cni-plugin/opencontrail-ipam ~/cni/plugins/ipam
 export GOPATH=/usr/lib/go/
 export CNI_PATH=~/cni/bin
 cd ~/cni
 go get github.com/michaelhenkel/contrail-go-api
 go get github.com/satori/go.uuid
 go get github.com/pborman/uuid
+go get github.com/alexcesaro/log
 ./build
 mkdir -p /etc/cni/net.d
 cat >/etc/cni/net.d/10-opencontrail-multi.conf <<EOF
