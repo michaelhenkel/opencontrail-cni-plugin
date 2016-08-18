@@ -98,28 +98,7 @@ type NetConf struct {
 }
 
 type MultiConf struct {
-	Networks      []NetConf `json:"networks"`
-        ApiServer     string `json:"api_server"`
-        ApiPort       int `json:"api_port"`
-        AuthUrl       string `json:"auth_url"`
-        TenantName    string `json:"tenant_name"`
-        AdminUser     string `json:"admin_user"`
-        AdminPassword string `json:"admin_password"`
-        AdminToken    string `json:"admin_token"`
-}
-
-type Result struct {
-    Ipv4    *IP    `json:"ipv4"`
-    Dns    *DNS    `json:"dns"`
-}
-
-type IP struct {
-        Ip    string    `json:"ip"`
-    	Gateway    string    `json:"gateway"`    
-}
-
-type DNS struct {
-    Nameservers    []string `json:"nameservers"`
+	Networks	[]NetConf `json:"networks"`
 }
 
 func loadMultiConf(bytes []byte) (*MultiConf, error) {
@@ -169,7 +148,8 @@ func getLevelFromName(levelName string) (level log.Level) {
     case "none":
         level = log.None
     default:
-        level = log.None
+        fmt.Fprintf(os.Stderr, "Invalid level value %q, allowed values are: debug, info, notice, warning, error, critical, alert, emergency and none\n", levelName)
+        os.Exit(2)
     }
 
     return
@@ -277,6 +257,7 @@ type Port struct {
 }
 
 func cmdAdd(args *skel.CmdArgs) error {
+    	logger.Info("Starting.....")
 	var vethInt string
 	var hostVethName string
         var err error
@@ -298,34 +279,22 @@ func cmdAdd(args *skel.CmdArgs) error {
                 return fmt.Errorf("failed to open netns %q: %v", args.Netns, err)
         }
         defer netns.Close()
-        netConf, _ := loadNetConf(args.StdinData)
-        if netConf.ApiServer != "" {
-            oc_server = netConf.ApiServer
-        }
-        if netConf.ApiPort != 0 {
-            oc_port = netConf.ApiPort
-        }
-        if netConf.TenantName != "" {
-            os_tenant_name = netConf.TenantName
-        }
-        if netConf.AuthUrl != "" {
-            os_auth_url = netConf.AuthUrl
-        }
-        if netConf.AdminUser != "" {
-            os_username = netConf.AdminUser
-        }
-        if netConf.AdminPassword != "" {
-            os_password = netConf.AdminPassword
-        }
+        netConfList, _ := loadMultiConf(args.StdinData)
         client := contrail.NewClient(oc_server, oc_port)
         if len(os_auth_url) > 0 {
                 setupAuthKeystone(client)
         }
-        projectIObj, _ := client.FindByName("project", "default-domain:" + os_tenant_name)
+        projectIObj, err := client.FindByName("project", "default-domain:" + os_tenant_name)
+        if err != nil {
+                fmt.Println("project err: ", err)
+                os.Exit(1)
+        }
         projectObj := projectIObj.(*contrailtypes.Project)
+        for _, netConf := range netConfList.Networks {
                 vethInt = "eth" + strconv.Itoa(vethIntNumber)
                 vethIntNumber = vethIntNumber + 1
                 netConf.Ipam.Name = netConf.NetworkName
+                fmt.Print("ipamConf: ", netConf.Ipam)
 		vethMac, hostVethName, err = setupVeth(netns, vethInt, netConf.MTU)
         	virtualNetworkObj = createNetwork(client, &netConf.Ipam)
         	virtualMachineObj = createVirtualMachine(client, containerName)
@@ -340,6 +309,7 @@ func cmdAdd(args *skel.CmdArgs) error {
         	}); err != nil {
         		return err
     		}
+		logger.Debug("\n####### VETHNAME ###########", hostVethName, "\n")
 		portJson := Port{
         		Id: 		virtualMachineInterfaceObj.GetUuid(),
 			InstanceId: 	virtualMachineObj.GetUuid(),
@@ -353,44 +323,34 @@ func cmdAdd(args *skel.CmdArgs) error {
 			Time:		time.Now().String(),
     		}
 		j, err := json.Marshal(portJson)
+		fmt.Println(string(j), err)
 		req, err := http.NewRequest("POST", url, bytes.NewBuffer(j))
 		req.Header.Set("Content-Type", "application/json")
-		http_client := &http.Client{}
-		resp, err := http_client.Do(req)
+		client := &http.Client{}
+		resp, err := client.Do(req)
 		if err != nil {
 			panic(err)
 		}
 		defer resp.Body.Close()
-		ioutil.ReadAll(resp.Body)
+
+		fmt.Println("response Status:", resp.Status)
+		fmt.Println("response Headers:", resp.Header)
+		body, _ := ioutil.ReadAll(resp.Body)
+		fmt.Println("response Body:", string(body))
 		writeToFile(virtualMachineInterfaceObj.GetUuid(), portJson)
-/*
-                fmt.Print("ipam conf: ", ipamConfiguration, "\n")
-                fmt.Print("ip conf: ", ipamConfiguration.IP4, "\n")
-                fmt.Print("gw conf: ", ipamConfiguration.IP4.Gateway, "\n")
-                fmt.Print("dns conf: ", ipamConfiguration.DNS.Nameservers, "\n")
-*/
-                ip := &IP{
-                    Ip: instanceIpObj.GetInstanceIpAddress(),
-                    Gateway: ipamConfiguration.IP4.Gateway.String(),
-                }
-                dns := &DNS{
-                    Nameservers: ipamConfiguration.DNS.Nameservers,
-                }
-                result := &Result{
-                    Ipv4: ip,
-                    Dns: dns,
-                }
-                b, _ := json.Marshal(result)
-                fmt.Println(string(b))
+		
+        }
         return nil
 }
 
 func writeToFile(uuid string, portJson Port){
 	portFilePath := "/var/lib/contrail/ports/" + uuid
-	j, _ := json.Marshal(portJson)
-	f, _ := os.Create(portFilePath)
+	j, err := json.Marshal(portJson)
+        fmt.Println(string(j), err)
+	f, err := os.Create(portFilePath)
 	w := bufio.NewWriter(f)
-	_, _ = w.WriteString(string(j))
+	_, err = w.WriteString(string(j))
+        fmt.Println(err)
 	w.Flush()
 	defer f.Close()
 }
@@ -434,6 +394,7 @@ func createIpamConfiguration(vnObj *contrailtypes.VirtualNetwork, instIpObj *con
 
 func createVirtualMachine(client *contrail.Client, containerName string) (
         *contrailtypes.VirtualMachine){
+ 	logger.Debug("starting to create Virtual Machine Object...")
         vmIObj, _ := client.FindByName("virtual-machine",containerName)
         if vmIObj == nil{
         	vm := new(contrailtypes.VirtualMachine)
@@ -441,9 +402,11 @@ func createVirtualMachine(client *contrail.Client, containerName string) (
         	client.Create(vm)
         	vmIObj, _ := client.FindByName("virtual-machine",containerName)
         	vmObj := vmIObj.(*contrailtypes.VirtualMachine)
+		logger.Debug("Virtual Machine Object created...", vmIObj)
         	return vmObj
 	}else{
         	vmObj := vmIObj.(*contrailtypes.VirtualMachine)
+		logger.Debug("Virtual Machine Object already exists...", vmIObj)
         	return vmObj
 	}
 
@@ -451,6 +414,9 @@ func createVirtualMachine(client *contrail.Client, containerName string) (
 
 func createVirtualMachineInterface(client *contrail.Client, vnObj *contrailtypes.VirtualNetwork, vmObj *contrailtypes.VirtualMachine, mac string, os_tenant_name string, hostVethName string) (
         *contrailtypes.VirtualMachineInterface){
+ 	logger.Debug("starting to create Virtual Machine Interface Object...")
+        //vmiUuidv4 := uuid.NewV4().String()
+        //vmiUuid := strings.Split(vmiUuidv4,"-")[0]
         vmiMac := new(contrailtypes.MacAddressesType)
         vmiMac.AddMacAddress(mac)
         vmi := new(contrailtypes.VirtualMachineInterface)
@@ -465,11 +431,13 @@ func createVirtualMachineInterface(client *contrail.Client, vnObj *contrailtypes
                 os.Exit(1)
         }
         vmiObj := vmiIObj.(*contrailtypes.VirtualMachineInterface)
+ 	logger.Debug("Virtual Machine Interface Object created...", vmiIObj)
         return vmiObj
 }
 
 func createInstanceIp(client *contrail.Client, vnObj *contrailtypes.VirtualNetwork) (
         *contrailtypes.InstanceIp){
+ 	logger.Debug("starting to create Instance IP Object...")
         instanceIpUuid := uuid.NewV4().String()
         instanceIp := new(contrailtypes.InstanceIp)
         instanceIp.SetName(instanceIpUuid)
@@ -482,25 +450,30 @@ func createInstanceIp(client *contrail.Client, vnObj *contrailtypes.VirtualNetwo
         }
         instanceIpObj := instanceIpIObj.(*contrailtypes.InstanceIp)
         instanceIpObj.ClearVirtualNetwork()
+ 	logger.Debug("Instance IP Object created...", instanceIpIObj)
         return instanceIpObj
 }
 
 func createNetwork(client *contrail.Client, ipam *IPAMConfig)(
         *contrailtypes.VirtualNetwork) {
+ 	logger.Debug("starting to create Virtual Network Object...")
         var parent_id string
         var err error
         var vnUuid string
         parent_id, err = contrailconfig.GetProjectId(
                          client, os_tenant_name, "")
         if err != nil {
+                fmt.Fprintln(os.Stderr, err)
                 os.Exit(1)
         }
         networkList, err := client.ListByParent("virtual-network", parent_id)
         for _, n := range networkList {
-                vnIObj, _ := client.FindByUuid("virtual-network", n.Uuid)
+                vnIObj, err := client.FindByUuid("virtual-network", n.Uuid)
+		fmt.Print("\nvnIObj :", vnIObj, "\nerror: ", err)
                 vnObj := vnIObj.(*contrailtypes.VirtualNetwork)
                 displayName := vnObj.GetDisplayName()
                 if displayName == ipam.Name{
+ 			logger.Debug("Virtual Network Object already exists...", vnIObj)
      			return vnObj
 		}
         }
@@ -510,6 +483,7 @@ func createNetwork(client *contrail.Client, ipam *IPAMConfig)(
         parent_id, err = contrailconfig.GetProjectId(
             client, os_tenant_name, "")
         if err != nil {
+            fmt.Fprint(os.Stderr, err)
             os.Exit(1)
         }
         vnUuid, err = contrailconfig.CreateNetworkWithSubnet(client, parent_id,
@@ -517,14 +491,17 @@ func createNetwork(client *contrail.Client, ipam *IPAMConfig)(
         vnIObj, err := client.FindByUuid("virtual-network", vnUuid)
         vnObj := vnIObj.(*contrailtypes.VirtualNetwork)
         if err != nil {
+            fmt.Fprint(os.Stderr, err)
             os.Exit(1)
         }
+	logger.Debug("Virtual Network Object created...", vnIObj)
         return vnObj
 
 }
 
 
 func deleteVirtualMachineInterface(client *contrail.Client, networkName string, containerName string) {
+	logger.Debug("Starting to delete Virtual Machine Interface...")
         fqn := containerName
         vmIObj, _ := client.FindByName("virtual-machine",fqn)
         if vmIObj != nil{
@@ -546,6 +523,9 @@ func deleteVirtualMachineInterface(client *contrail.Client, networkName string, 
       	 	        		        	client.Delete(instanceIpObj)
       	 		         		}
        			         		client.Delete(vmiObj)
+						logger.Debug("\n##### Deleted Virtual Machine Interface ####\n")
+						logger.Debug(vmiObj)
+						logger.Debug("\n############################################\n")
                        				url := "http://localhost:9091/port/" + vmiObj.GetUuid()
                         			req, err := http.NewRequest("DELETE", url, nil)
                         			req.Header.Set("Content-Type", "application/json")
@@ -568,6 +548,7 @@ func deleteVirtualMachineInterface(client *contrail.Client, networkName string, 
 	}
 }
 func deleteVirtualNetwork(client *contrail.Client, networkName string) {
+	logger.Debug("Starting to delete Virtual Network....")
 	parent_id, err := contrailconfig.GetProjectId(
                          client, os_tenant_name, "")
         if err != nil {
@@ -583,6 +564,9 @@ func deleteVirtualNetwork(client *contrail.Client, networkName string) {
 			virtualMachineInterfaceRefs, _ := vnObj.GetVirtualMachineInterfaceBackRefs()
 			if len(virtualMachineInterfaceRefs) == 0{
 				client.Delete(vnObj)
+				logger.Debug("Virtual Network deleted...", vnIObj)
+			}else{
+				logger.Debug("Virtual Network not empty...", vnIObj)
 			}
                 }
         }
@@ -592,6 +576,7 @@ func cmdDel(args *skel.CmdArgs) error {
 	var ipn *net.IPNet
         var err error
         containerName := args.ContainerID
+	logger.Debug("DELETE")
 	//portMap := make(map[string]PortStruct)
         if len(containerName) > 8 {
                         var containerNameArray []string
@@ -607,7 +592,9 @@ func cmdDel(args *skel.CmdArgs) error {
                 setupAuthKeystone(client)
         }
         vethIntNumber := 0
-        netConf, _ := loadNetConf(args.StdinData)
+        netConfList, _ := loadMultiConf(args.StdinData)
+	logger.Debug("DELETE")
+        for _, netConf := range netConfList.Networks {
         	deleteVirtualMachineInterface(client, netConf.NetworkName, containerName)
 		vethInt := "eth" + strconv.Itoa(vethIntNumber)
                 vethIntNumber = vethIntNumber + 1
@@ -619,6 +606,7 @@ func cmdDel(args *skel.CmdArgs) error {
         		return err
     		}
         	//deleteVirtualNetwork(client, netConf.NetworkName)
+	} 
         return nil
 }
 
